@@ -12,11 +12,32 @@ pub struct Config {
 impl Config {
     pub fn from_file_or_default(path: &Path) -> Self {
         if !path.exists() {
+            eprintln!(
+                "warning: config file `{}` not found — using default configuration",
+                path.display()
+            );
             return Config::default();
         }
         match fs::read_to_string(path) {
-            Ok(content) => toml::from_str::<Config>(&content).unwrap_or_default(),
-            Err(_) => Config::default(),
+            Ok(content) => match toml::from_str::<Config>(&content) {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to parse config file `{}`: {} — using default configuration",
+                        path.display(),
+                        e
+                    );
+                    Config::default()
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "warning: could not read config file `{}`: {} — using default configuration",
+                    path.display(),
+                    e
+                );
+                Config::default()
+            }
         }
     }
 }
@@ -75,6 +96,58 @@ soroban_storage_in_loop = "deny"
         write_file(&path, "");
         let config = Config::from_file_or_default(&path);
         assert!(config.lints.is_none());
+    }
+
+    #[test]
+    fn from_file_or_default_handles_type_mismatch_in_lint_value() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("budget.toml");
+        write_file(
+            &path,
+            r#"[lints]
+soroban_storage_in_loop = 42
+"#,
+        );
+        let config = Config::from_file_or_default(&path);
+        assert!(
+            config.lints.is_none(),
+            "type mismatches should fall back to defaults"
+        );
+    }
+
+    #[test]
+    fn from_file_or_default_handles_non_string_table_value() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("budget.toml");
+        write_file(
+            &path,
+            r#"[lints]
+redundant_env_clone = true
+"#,
+        );
+        let config = Config::from_file_or_default(&path);
+        assert!(
+            config.lints.is_none(),
+            "non-string values in lints should trigger default fallback"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_file_or_default_returns_default_for_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("budget.toml");
+        write_file(&path, r#"some content"#);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).ok();
+
+        let config = Config::from_file_or_default(&path);
+        assert!(
+            config.lints.is_none(),
+            "unreadable files should fall back to defaults"
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).ok();
     }
 
     #[test]
